@@ -72,6 +72,27 @@ with col1:
 
     st.subheader("Nodal Loads")
     load_df = st.data_editor(st.session_state['loads_data'], num_rows="dynamic", key="loads", on_change=clear_results)
+
+
+    st.markdown("---")
+    st.subheader("⚙️ Solver Settings")
+    
+    analysis_type = st.radio(
+        "Select Analysis Method:", 
+        ["Linear Elastic (Standard)", "Non-Linear (Geometric P-Δ)"], 
+        horizontal=True,
+        on_change=clear_results
+    )
+
+    load_steps = 10
+    if analysis_type == "Non-Linear (Geometric P-Δ)":
+        load_steps = st.slider(
+            "Newton-Raphson Load Steps", 
+            min_value=5, max_value=50, value=10, step=5,
+            help="Breaking the total load into smaller steps helps the non-linear solver converge."
+        )
+        st.info("💡 Non-linear analysis applies the load incrementally, updating the stiffness matrix as the geometry deforms.")
+
     
     if st.button("Calculate Results"):
         try:
@@ -126,9 +147,15 @@ with col1:
             if not ts.nodes or not ts.members:
                 raise ValueError("Incomplete model: Please define at least two valid nodes and one member.")
                 
-            ts.solve()
+            # --- CHOOSE SOLVER BASED ON UI TOGGLE ---
+            if analysis_type == "Linear Elastic (Standard)":
+                ts.solve()
+            else:
+                with st.spinner(f"Running Non-Linear Newton-Raphson across {load_steps} increments..."):
+                    ts.solve_nonlinear(load_steps=load_steps)
+                    
             st.session_state['solved_truss'] = ts
-            st.success("Analysis Complete!")
+            st.success(f"Analysis Complete using {analysis_type}!")
         except Exception as e:
             st.error(f"Error: {e}")
 
