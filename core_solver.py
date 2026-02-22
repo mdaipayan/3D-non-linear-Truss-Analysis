@@ -149,3 +149,94 @@ class TrussSystem:
             # Pull the 6 nodal displacements corresponding to this specific member
             member.u_local = np.array([self.U_global[dof] for dof in member.dofs])
             member.calculate_force()
+
+
+    def solve_nonlinear(self, load_steps=10, tolerance=1e-5, max_iter=50):
+        """Solves the system using the Incremental Newton-Raphson method for Geometric Non-Linearity."""
+        num_dofs = 3 * len(self.nodes)
+        
+        # Determine free DOFs
+        restrained_dofs = []
+        for node in self.nodes:
+            if node.rx: restrained_dofs.append(node.dofs[0])
+            if node.ry: restrained_dofs.append(node.dofs[1])
+            if node.rz: restrained_dofs.append(node.dofs[2])
+        self.free_dofs = [i for i in range(num_dofs) if i not in restrained_dofs]
+        
+        # Assemble target load vector
+        F_target = np.zeros(num_dofs)
+        for dof, force in self.loads.items():
+            F_target[dof] += force
+            
+        # Initialize state variables
+        self.U_global = np.zeros(num_dofs)
+        member_forces = {m.id: 0.0 for m in self.members}
+        
+        # Incremental Load Loop
+        for step in range(1, load_steps + 1):
+            F_ext = (step / load_steps) * F_target
+            
+            # Newton-Raphson Iteration Loop
+            for iteration in range(max_iter):
+                # 1. Build Tangent Stiffness Matrix (K_T = K_E + K_G)
+                K_T = np.zeros((num_dofs, num_dofs))
+                F_int = np.zeros(num_dofs) # Internal force vector
+                
+                for m in self.members:
+                    # Update kinematics based on CURRENT displaced geometry
+                    n_i = self.nodes[m.node_i.id - 1]
+                    n_j = self.nodes[m.node_j.id - 1]
+                    
+                    dx = (n_j.x + self.U_global[n_j.dofs[0]]) - (n_i.x + self.U_global[n_i.dofs[0]])
+                    dy = (n_j.y + self.U_global[n_j.dofs[1]]) - (n_i.y + self.U_global[n_i.dofs[1]])
+                    dz = (n_j.z + self.U_global[n_j.dofs[2]]) - (n_i.z + self.U_global[n_i.dofs[2]])
+                    
+                    m.L_current = np.sqrt(dx**2 + dy**2 + dz**2)
+                    m.l, m.m, m.n = dx/m.L_current, dy/m.L_current, dz/m.L_current
+                    m.T_vector = np.array([-m.l, -m.m, -m.n, m.l, m.m, m.n])
+                    
+                    # Recalculate K_E and K_G
+                    KE = (m.E * m.A / m.L) * np.outer(m.T_vector, m.T_vector) 
+                    KG = m.get_k_geometric(member_forces[m.id])
+                    K_element = KE + KG
+                    
+                    # Assemble global K_T
+                    for i in range(6):
+                        for j in range(6):
+                            K_T[m.dofs[i], m.dofs[j]] += K_element[i, j]
+                            
+                    # Calculate internal forces to find residual
+                    m.u_local = np.array([self.U_global[dof] for dof in m.dofs])
+                    force = (m.E * m.A / m.L) * np.dot(m.T_vector, m.u_local)
+                    member_forces[m.id] = force
+                    
+                    # Map element internal forces to global internal force vector
+                    global_f_int = force * np.array([-m.l, -m.m, -m.n, m.l, m.m, m.n])
+                    for i in range(6):
+                        F_int[m.dofs[i]] += global_f_int[i]
+
+                # 2. Calculate Unbalanced Forces (Residuals)
+                Residual = F_ext - F_int
+                Residual_free = Residual[self.free_dofs]
+                
+                # Check Convergence
+                if np.linalg.norm(Residual_free) < tolerance:
+                    break 
+                    
+                # 3. Solve for Displacement Increment
+                K_T_reduced = K_T[np.ix_(self.free_dofs, self.free_dofs)]
+                delta_U_free = np.linalg.solve(K_T_reduced, Residual_free)
+                
+                # 4. Update Displacements
+                for idx, dof in enumerate(self.free_dofs):
+                    self.U_global[dof] += delta_U_free[idx]
+                    
+            if iteration == max_iter - 1:
+                raise ValueError(f"Newton-Raphson failed to converge at load step {step}.")
+
+        # Finalize final states
+        self.K_global = K_T
+        self.F_global = F_target
+        
+        for m in self.members:
+            m.internal_force = member_forces[m.id]
