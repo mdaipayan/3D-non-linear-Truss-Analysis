@@ -54,7 +54,24 @@ class Member:
         # Map element DOFs to system DOFs
         self.dofs = self.node_i.dofs + self.node_j.dofs
         self.u_local = None
-
+        
+    def get_k_geometric(self, current_force):
+        """Calculates the 6x6 Geometric Stiffness Matrix (K_G) based on current axial force."""
+        Z = np.array([
+            [1 - self.l**2, -self.l*self.m, -self.l*self.n],
+            [-self.l*self.m, 1 - self.m**2, -self.m*self.n],
+            [-self.l*self.n, -self.m*self.n, 1 - self.n**2]
+        ])
+        
+        KG_sub = (current_force / self.L) * Z
+        
+        KG = np.zeros((6, 6))
+        KG[0:3, 0:3] = KG_sub
+        KG[3:6, 3:6] = KG_sub
+        KG[0:3, 3:6] = -KG_sub
+        KG[3:6, 0:3] = -KG_sub
+        
+        return KG
     def calculate_force(self):
         """Calculates axial force. Positive = Tension, Negative = Compression."""
         if self.u_local is not None:
